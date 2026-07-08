@@ -49,6 +49,7 @@ const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
   terraform: 'tree-sitter-terraform.wasm',
   arkts: 'tree-sitter-arkts.wasm',
   nix: 'tree-sitter-nix.wasm',
+  starlark: 'tree-sitter-starlark.wasm',
 };
 
 /**
@@ -169,6 +170,12 @@ export const EXTENSION_MAP: Record<string, Language> = {
   '.tf': 'terraform',
   '.tfvars': 'terraform',
   '.tofu': 'terraform',
+  // Starlark (Bazel/Buck2/Please build files). `.bzl` is macro/rule-definition
+  // files; `.star` is generic Starlark outside the Bazel ecosystem. Bazel's
+  // canonical BUILD/WORKSPACE/MODULE.bazel files are extensionless — routed by
+  // isBazelBuildFile below, not this map.
+  '.bzl': 'starlark',
+  '.star': 'starlark',
 };
 
 /**
@@ -184,6 +191,7 @@ export function isSourceFile(filePath: string, overrides?: Record<string, Langua
   if (isPlayRoutesFile(filePath)) return true; // Play `conf/routes` is extensionless
   if (isShopifyLiquidJson(filePath)) return true; // Shopify OS 2.0 JSON templates / section groups
   if (isErlangAppFile(filePath)) return true; // OTP `.app`/`.app.src` resource files
+  if (isBazelBuildFile(filePath)) return true; // BUILD/WORKSPACE/MODULE.bazel are extensionless
   const dot = filePath.lastIndexOf('.');
   if (dot < 0) return false;
   const ext = filePath.slice(dot).toLowerCase();
@@ -223,6 +231,23 @@ export function isPlayRoutesFile(filePath: string): boolean {
     filePath === 'conf/routes' ||
     filePath.endsWith('/conf/routes') ||
     filePath.endsWith('.routes')
+  );
+}
+
+/**
+ * Bazel's canonical build files are extensionless (or a fixed non-extension
+ * basename): `BUILD`, `BUILD.bazel`, `WORKSPACE`, `WORKSPACE.bazel`,
+ * `MODULE.bazel`. All parse with the Starlark grammar. `.bzl`/`.star` files
+ * carry a real extension and are routed via EXTENSION_MAP instead.
+ */
+export function isBazelBuildFile(filePath: string): boolean {
+  const base = filePath.slice(filePath.lastIndexOf('/') + 1);
+  return (
+    base === 'BUILD' ||
+    base === 'BUILD.bazel' ||
+    base === 'WORKSPACE' ||
+    base === 'WORKSPACE.bazel' ||
+    base === 'MODULE.bazel'
   );
 }
 
@@ -310,7 +335,12 @@ export async function loadGrammarsForLanguages(languages: Language[]): Promise<v
       // 0.25.10 (`generate` + `build --wasm`, ABI 15 — upstream's checked-in
       // parser.c is still ABI 13; all 54 upstream corpus tests pass on the
       // regenerated parser).
-      const wasmPath = (lang === 'pascal' || lang === 'scala' || lang === 'lua' || lang === 'luau' || lang === 'csharp' || lang === 'r' || lang === 'cfml' || lang === 'cfscript' || lang === 'cfquery' || lang === 'cobol' || lang === 'vbnet' || lang === 'erlang' || lang === 'terraform' || lang === 'arkts' || lang === 'nix')
+      // Starlark: tree-sitter-wasms doesn't ship it; we vendor the prebuilt
+      // tree-sitter-starlark.wasm from the tree-sitter-starlark 1.3.0 npm
+      // package (tree-sitter-grammars/tree-sitter-starlark, MIT), ABI 14 —
+      // byte-identical to the npm tarball's artifact. See
+      // docs/grammars/tree-sitter-starlark.md.
+      const wasmPath = (lang === 'pascal' || lang === 'scala' || lang === 'lua' || lang === 'luau' || lang === 'csharp' || lang === 'r' || lang === 'cfml' || lang === 'cfscript' || lang === 'cfquery' || lang === 'cobol' || lang === 'vbnet' || lang === 'erlang' || lang === 'terraform' || lang === 'arkts' || lang === 'nix' || lang === 'starlark')
         ? path.join(__dirname, 'wasm', wasmFile)
         : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
       const language = await WasmLanguage.load(wasmPath);
@@ -377,6 +407,8 @@ export function detectLanguage(filePath: string, source?: string, overrides?: Re
   // OTP `.app`/`.app.src` resource files — Erlang terms the grammar parses as
   // top-level expressions (last-dot ext `.src` is too generic for the map).
   if (isErlangAppFile(filePath)) return 'erlang';
+  // Bazel BUILD/WORKSPACE/MODULE.bazel — extensionless, parsed as Starlark.
+  if (isBazelBuildFile(filePath)) return 'starlark';
   const lang = (overrides && overrides[ext]) || EXTENSION_MAP[ext] || 'unknown';
 
   // .h files could be C, C++, or Objective-C — check source content
@@ -547,6 +579,7 @@ export function getLanguageDisplayName(language: Language): string {
     erlang: 'Erlang',
     terraform: 'Terraform',
     arkts: 'ArkTS',
+    starlark: 'Starlark',
     unknown: 'Unknown',
   };
   return names[language] || language;

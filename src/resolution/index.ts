@@ -592,6 +592,7 @@ export class ReferenceResolver {
       column: ref.column,
       filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
       language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
+      candidates: ref.candidates,
     }));
 
     const total = refs.length;
@@ -1081,6 +1082,7 @@ export class ReferenceResolver {
         column: raw.column,
         filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId),
         language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
+        candidates: raw.candidates,
       };
       const result = this.resolveOne(ref);
       if (result) {

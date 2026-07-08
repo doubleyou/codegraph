@@ -29,6 +29,7 @@ import { expoModulesResolver } from './expo-modules';
 import { fabricViewResolver } from './fabric';
 import { cicsResolver } from './cics';
 import { terraformResolver } from './terraform';
+import { starlarkResolver } from './starlark';
 
 /**
  * All registered framework resolvers
@@ -76,6 +77,8 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   cicsResolver,
   // Terraform / OpenTofu — disambiguate var/local/module/resource refs to same-dir module
   terraformResolver,
+  // Starlark / Bazel — target label + srcs/glob cross-language file resolution
+  starlarkResolver,
 ];
 
 /**

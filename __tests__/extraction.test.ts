@@ -150,6 +150,24 @@ describe('Language Detection', () => {
     expect(isSourceFile('default.nix')).toBe(true);
   });
 
+  it('should detect Starlark (Bazel) files', () => {
+    expect(detectLanguage('tools/defs.bzl')).toBe('starlark');
+    expect(detectLanguage('rules/rules.star')).toBe('starlark');
+    // BUILD/WORKSPACE/MODULE.bazel are extensionless — routed by filename.
+    expect(detectLanguage('BUILD')).toBe('starlark');
+    expect(detectLanguage('foo/BUILD')).toBe('starlark');
+    expect(detectLanguage('BUILD.bazel')).toBe('starlark');
+    expect(detectLanguage('WORKSPACE')).toBe('starlark');
+    expect(detectLanguage('WORKSPACE.bazel')).toBe('starlark');
+    expect(detectLanguage('MODULE.bazel')).toBe('starlark');
+    expect(isSourceFile('BUILD')).toBe(true);
+    expect(isSourceFile('foo/bar/BUILD')).toBe(true);
+    expect(isSourceFile('WORKSPACE')).toBe(true);
+    expect(isSourceFile('tools/defs.bzl')).toBe(true);
+    // A file merely ending in "BUILD" isn't the canonical basename.
+    expect(detectLanguage('NOTABUILD')).toBe('unknown');
+  });
+
   it('should detect a .h whose only C++ signal is an export-macro class as cpp', () => {
     // Lean Unreal-Engine style header: the class is annotated with an export
     // macro and carries no explicit `public:`/`virtual`/`namespace`/`template`,
@@ -205,6 +223,7 @@ describe('Language Support', () => {
     expect(languages).toContain('dart');
     expect(languages).toContain('solidity');
     expect(languages).toContain('nix');
+    expect(languages).toContain('starlark');
   });
 });
 
@@ -10654,6 +10673,149 @@ resource "aws_instance" "x" {
       expect(refs.some((r) => r.startsWith('self.'))).toBe(false);
       expect(refs.some((r) => r.startsWith('path.'))).toBe(false);
       expect(refs.some((r) => r.startsWith('terraform.'))).toBe(false);
+    });
+  });
+});
+
+// =============================================================================
+// Starlark (Bazel BUILD/.bzl/WORKSPACE)
+// =============================================================================
+
+describe('Starlark Extraction', () => {
+  describe('Language detection', () => {
+    it('should report Starlark as supported', () => {
+      expect(isLanguageSupported('starlark')).toBe(true);
+      expect(getSupportedLanguages()).toContain('starlark');
+    });
+  });
+
+  describe('Target extraction', () => {
+    it('should extract a rule call with name= as a class node keyed by target name', () => {
+      const code = `
+cc_library(
+    name = "foo",
+    srcs = ["foo.cc"],
+)
+`;
+      const result = extractFromSource('foo/BUILD', code);
+      const target = result.nodes.find((n) => n.name === 'foo');
+      expect(target).toBeDefined();
+      expect(target?.kind).toBe('class');
+      expect(target?.language).toBe('starlark');
+      expect(target?.signature).toBe('cc_library(name = "foo")');
+    });
+
+    it('should extract a user-defined macro invocation with name= the same way as a builtin rule', () => {
+      const code = `
+cc_module(
+    name = "bar",
+    srcs = ["bar.cc"],
+)
+`;
+      const result = extractFromSource('bar/BUILD', code);
+      const target = result.nodes.find((n) => n.name === 'bar');
+      expect(target).toBeDefined();
+      expect(target?.kind).toBe('class');
+      expect(target?.signature).toBe('cc_module(name = "bar")');
+    });
+
+    it('should extract workspace(name=...) as a target node', () => {
+      const code = `workspace(name = "my_workspace")\n`;
+      const result = extractFromSource('WORKSPACE', code);
+      const ws = result.nodes.find((n) => n.name === 'my_workspace');
+      expect(ws).toBeDefined();
+      expect(ws?.kind).toBe('class');
+    });
+  });
+
+  describe('Macro/rule definitions', () => {
+    it('should extract a def in a .bzl file as a function node', () => {
+      const code = `
+def cc_module(name, srcs, deps = []):
+    native.cc_library(name = name, srcs = srcs, deps = deps)
+`;
+      const result = extractFromSource('tools/defs.bzl', code);
+      const fn = result.nodes.find((n) => n.name === 'cc_module');
+      expect(fn).toBeDefined();
+      expect(fn?.kind).toBe('function');
+      expect(fn?.language).toBe('starlark');
+    });
+  });
+
+  describe('load() imports', () => {
+    it('should extract load(...) as an imports reference to the .bzl label', () => {
+      const code = `
+load("//tools:defs.bzl", "cc_module")
+
+cc_module(name = "foo", srcs = ["foo.cc"])
+`;
+      const result = extractFromSource('foo/BUILD', code);
+      const importRefs = result.unresolvedReferences.filter((r) => r.referenceKind === 'imports');
+      expect(importRefs.map((r) => r.referenceName)).toContain('//tools:defs.bzl');
+    });
+  });
+
+  describe('srcs/deps reference extraction (cross-language bridge + build-dep graph)', () => {
+    it('should emit a references ref for each literal srcs/hdrs entry', () => {
+      const code = `
+cc_library(
+    name = "foo",
+    srcs = ["foo.cc", "foo_impl.cc"],
+    hdrs = ["foo.h"],
+)
+`;
+      const result = extractFromSource('foo/BUILD', code);
+      const refs = result.unresolvedReferences
+        .filter((r) => r.referenceKind === 'references')
+        .map((r) => r.referenceName);
+      expect(refs).toEqual(expect.arrayContaining(['foo.cc', 'foo_impl.cc', 'foo.h']));
+    });
+
+    it('should tag a glob([...]) srcs entry with a glob: candidate for the resolver to expand', () => {
+      const code = `
+cc_library(
+    name = "foo",
+    srcs = glob(["*.cc"]),
+)
+`;
+      const result = extractFromSource('foo/BUILD', code);
+      const globRef = result.unresolvedReferences.find((r) => r.referenceName === '*.cc');
+      expect(globRef).toBeDefined();
+      expect(globRef?.referenceKind).toBe('references');
+      expect(globRef?.candidates).toEqual(['glob:*.cc']);
+    });
+
+    it('should emit references refs for deps labels (:x, //pkg:x, @repo//pkg:x)', () => {
+      const code = `
+cc_library(
+    name = "foo",
+    deps = [
+        ":bar",
+        "//other/pkg:baz",
+        "@some_repo//lib:qux",
+    ],
+)
+`;
+      const result = extractFromSource('foo/BUILD', code);
+      const refs = result.unresolvedReferences
+        .filter((r) => r.referenceKind === 'references')
+        .map((r) => r.referenceName);
+      expect(refs).toEqual(expect.arrayContaining([':bar', '//other/pkg:baz', '@some_repo//lib:qux']));
+    });
+  });
+
+  describe('Calls', () => {
+    it('should emit a calls ref for a non-target helper call inside a macro body', () => {
+      const code = `
+def cc_module(name, srcs):
+    helper_check(name)
+    native.cc_library(name = name, srcs = srcs)
+`;
+      const result = extractFromSource('tools/defs.bzl', code);
+      const calls = result.unresolvedReferences
+        .filter((r) => r.referenceKind === 'calls')
+        .map((r) => r.referenceName);
+      expect(calls).toContain('helper_check');
     });
   });
 });

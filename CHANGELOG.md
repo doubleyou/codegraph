@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- CodeGraph now indexes **Starlark** (`.bzl`, `.star`, and Bazel's `BUILD`/`BUILD.bazel`/`WORKSPACE`/`WORKSPACE.bazel`/`MODULE.bazel` files) — build targets, macro and rule definitions, and `load()` statements all become symbols and searchable. A target's `srcs`/`hdrs`/`data` (including simple `glob([...])` patterns) link to the real source files it builds, and its `deps` link to the other targets it depends on, so questions like "what target builds this function?" and "what does this library depend on?" are answerable directly from the graph — and a target's file links reach straight into that language's own function/class graph, so a build target connects all the way down to the C++, Python, or Java code it compiles.
 
 ## [1.3.0] - 2026-07-07
 
