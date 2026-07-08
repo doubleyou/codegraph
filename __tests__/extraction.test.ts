@@ -10818,6 +10818,34 @@ cc_library(
       expect(refs).toEqual(expect.arrayContaining([':bar', '//other/pkg:baz', '@some_repo//lib:qux']));
     });
 
+    it('should emit a references ref for a single label-shaped string attr (alias\' actual=)', () => {
+      const code = `
+alias(
+    name = "envoy",
+    actual = "//source/exe:envoy",
+)
+`;
+      const result = extractFromSource('BUILD', code);
+      const refs = result.unresolvedReferences
+        .filter((r) => r.referenceKind === 'references')
+        .map((r) => r.referenceName);
+      expect(refs).toContain('//source/exe:envoy');
+    });
+
+    it('should NOT emit a references ref for a scalar string attr that is not label-shaped', () => {
+      const code = `
+genrule(
+    name = "gen",
+    cmd = "echo hi",
+)
+`;
+      const result = extractFromSource('BUILD', code);
+      const refs = result.unresolvedReferences
+        .filter((r) => r.referenceKind === 'references')
+        .map((r) => r.referenceName);
+      expect(refs).not.toContain('echo hi');
+    });
+
     it('should emit references refs for a custom rule\'s own label-list attributes (no hardcoded attr-name allowlist)', () => {
       const code = `
 my_custom_rule(

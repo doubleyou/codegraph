@@ -38,7 +38,9 @@ import type { LanguageExtractor } from '../tree-sitter-types';
 // …) so they don't become junk unresolved refs; everything else — scalars,
 // `select(...)`, variables, mixed-type lists — is skipped because it isn't a
 // plain label list (silent-beats-wrong: the resolver would never match it
-// anyway).
+// anyway). One shape besides a list also counts: a single label-shaped
+// string (`alias(actual = "//pkg:x")`) — gated on the label prefix itself
+// (`:`, `//`, `@`), so a non-label scalar attr is still correctly skipped.
 
 /** Well-known string-list attrs that are never labels/files — kept out of references. */
 const NON_LABEL_LIST_ARGS = new Set([
@@ -182,6 +184,22 @@ function isStringList(value: SyntaxNode): boolean {
   );
 }
 
+/**
+ * A single label-shaped string, e.g. `actual = "//source/exe:envoy"` on
+ * `alias()`. Unlike `srcs`/`deps`/etc. (always lists), a handful of built-in
+ * attrs — `actual` chief among them — take exactly one label as a bare
+ * string. Gated on the label shape itself (`:x`, `//pkg:x`, `@repo//...`),
+ * the same shapes the resolver already claims, so a scalar that ISN'T a label
+ * (a rule's plain string attr, e.g. `cmd = "echo hi"`) is correctly skipped —
+ * no attribute-name allowlist needed, consistent with the value-shape-driven
+ * design above.
+ */
+function isSingleLabelString(value: SyntaxNode, source: string): boolean {
+  if (value.type !== 'string') return false;
+  const v = stringValue(value, source);
+  return !!v && (v.startsWith(':') || v.startsWith('//') || v.startsWith('@'));
+}
+
 export const starlarkExtractor: LanguageExtractor = {
   functionTypes: [],
   classTypes: [],
@@ -314,6 +332,17 @@ export const starlarkExtractor: LanguageExtractor = {
             if (!argName || argName === 'name' || NON_LABEL_LIST_ARGS.has(argName)) continue;
             const value = kwarg.childForFieldName('value');
             if (!value) continue;
+            if (isSingleLabelString(value, ctx.source)) {
+              const pattern = stringValue(value, ctx.source)!;
+              ctx.addUnresolvedReference({
+                fromNodeId: created.id,
+                referenceName: pattern,
+                referenceKind: 'references',
+                line: value.startPosition.row + 1,
+                column: value.startPosition.column,
+              });
+              continue;
+            }
             const isGlob = isGlobCall(value, ctx.source);
             if (!isGlob && !isStringList(value)) continue;
             for (const { pattern, node: strNode } of collectLabelStrings(value, ctx.source)) {
