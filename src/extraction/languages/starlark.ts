@@ -61,12 +61,12 @@ const NON_LABEL_LIST_ARGS = new Set([
 //     indexed, so an edge would just point at nothing.
 //
 //  2. `x = repository_rule(...)` / `rule(...)` / `provider(...)` / `aspect(...)`
-//     / `module_extension(...)` / `tag_class(...)` are assignment-wrapped
-//     definitions — the call itself has no `name=`, so without special-casing
-//     the LHS name is discarded and only a stray `calls` ref to e.g.
-//     "repository_rule" survives. These become `function` nodes named by the
-//     LHS identifier, so `load("//:defs.bzl", "x")` can resolve to them via
-//     the generic name matcher.
+//     / `module_extension(...)` / `tag_class(...)` / `macro(...)` are
+//     assignment-wrapped definitions — the call itself has no `name=`, so
+//     without special-casing the LHS name is discarded and only a stray
+//     `calls` ref to e.g. "repository_rule" survives. These become `function`
+//     nodes named by the LHS identifier, so `load("//:defs.bzl", "x")` can
+//     resolve to them via the generic name matcher.
 //
 // Two deliberate frontiers, left silent (no false positives):
 //  3. Positional-name calls (`external_http_archive("grpc", ...)`) can't be
@@ -84,7 +84,7 @@ function isModuleBazelFile(filePath: string): boolean {
 
 /** Definition-constructor builtins whose assignment target is the real definition name. */
 const DEFINITION_BUILTINS = new Set([
-  'rule', 'repository_rule', 'provider', 'aspect', 'module_extension', 'tag_class',
+  'rule', 'repository_rule', 'provider', 'aspect', 'module_extension', 'tag_class', 'macro',
 ]);
 
 /** If `call` is the RHS of `name = call(...)`, return `name`; else null. */

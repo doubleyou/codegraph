@@ -78,7 +78,7 @@ module(name = "not_a_bzlmod_module")
     cg.close?.();
   });
 
-  it('repository_rule/rule/provider/aspect/module_extension/tag_class assignments become function nodes', async () => {
+  it('repository_rule/rule/provider/aspect/module_extension/tag_class/macro assignments become function nodes', async () => {
     fs.writeFileSync(
       path.join(dir, 'defs.bzl'),
       `my_repo = repository_rule(implementation = _impl)
@@ -87,6 +87,7 @@ MyInfo = provider(fields = ["x"])
 my_ext = module_extension(implementation = _ext_impl)
 my_aspect = aspect(implementation = _aspect_impl)
 my_tag = tag_class(attrs = {})
+my_macro = macro(implementation = _macro_impl)
 
 # Bare (non-assigned) call: no LHS to recover, falls through to a calls ref.
 repository_rule(implementation = _impl)
@@ -108,6 +109,7 @@ x = struct(a = 1)
     expect(fn('my_ext')).toBe(1);
     expect(fn('my_aspect')).toBe(1);
     expect(fn('my_tag')).toBe(1);
+    expect(fn('my_macro')).toBe(1);
 
     // The old stray "repository_rule"-named node/ref is gone.
     expect(db.prepare(`SELECT count(*) c FROM nodes WHERE name = 'repository_rule'`).get().c).toBe(0);
