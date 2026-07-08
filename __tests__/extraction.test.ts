@@ -10802,6 +10802,57 @@ cc_library(
         .map((r) => r.referenceName);
       expect(refs).toEqual(expect.arrayContaining([':bar', '//other/pkg:baz', '@some_repo//lib:qux']));
     });
+
+    it('should emit references refs for a custom rule\'s own label-list attributes (no hardcoded attr-name allowlist)', () => {
+      const code = `
+my_custom_rule(
+    name = "x",
+    proto_deps = [":a"],
+    additional_srcs = ["y.cc"],
+)
+`;
+      const result = extractFromSource('pkg/BUILD', code);
+      const refs = result.unresolvedReferences
+        .filter((r) => r.referenceKind === 'references')
+        .map((r) => r.referenceName);
+      expect(refs).toEqual(expect.arrayContaining([':a', 'y.cc']));
+    });
+
+    it('should NOT emit references refs for well-known non-label string-list attrs (copts, defines, tags)', () => {
+      const code = `
+cc_library(
+    name = "foo",
+    copts = ["-O2", "-Wall"],
+    defines = ["FOO=1"],
+    tags = ["manual"],
+)
+`;
+      const result = extractFromSource('foo/BUILD', code);
+      const refs = result.unresolvedReferences
+        .filter((r) => r.referenceKind === 'references')
+        .map((r) => r.referenceName);
+      expect(refs).not.toEqual(expect.arrayContaining(['-O2', '-Wall', 'FOO=1', 'manual']));
+    });
+
+    it('should NOT emit a references ref when a label-list attr is a variable or select(...) (silent over wrong)', () => {
+      const code = `
+COMMON_DEPS = [":shared"]
+
+cc_library(
+    name = "foo",
+    deps = COMMON_DEPS,
+    data = select({
+        "//conditions:default": [":default_data"],
+    }),
+)
+`;
+      const result = extractFromSource('foo/BUILD', code);
+      const refs = result.unresolvedReferences
+        .filter((r) => r.referenceKind === 'references')
+        .map((r) => r.referenceName);
+      expect(refs).not.toContain(':shared');
+      expect(refs).not.toContain(':default_data');
+    });
   });
 
   describe('Calls', () => {

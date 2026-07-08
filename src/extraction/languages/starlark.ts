@@ -22,17 +22,29 @@ import type { LanguageExtractor } from '../tree-sitter-types';
 // `def` in a .bzl file is a macro/rule definition (kind `function`); calls to
 // user-defined macros/rules surface as `calls` refs the same way any call does.
 // `load(...)` is itself just a call — handled specially before the generic
-// target-call branch. `srcs`/`hdrs`/`deps`/`data` string lists (incl. simple
-// `glob([...])`) become `references` refs carrying the raw label text; the
+// target-call branch. Label/file-list attrs (`srcs`, `deps`, `hdrs`, `data`,
+// but also any custom rule's own attributes — `proto_deps`, `additional_srcs`,
+// etc.) become `references` refs carrying the raw label text; the
 // starlarkResolver framework (src/resolution/frameworks/starlark.ts) resolves
 // file-shaped labels to real `file` nodes (Tier 1 cross-language bridge) and
 // `:x` / `//pkg:x` labels to other target nodes (Tier 2 build-dep graph).
+//
+// Which kwargs to walk is decided by the VALUE'S SHAPE, not a fixed attribute
+// allowlist: Bazel's universal convention for label/file attributes is a
+// plain list of string literals (or a `glob([...])` call) — this holds for
+// built-in rules and custom ones alike, so a custom rule's own label-list
+// attributes are picked up with no per-rule configuration. A small denylist
+// suppresses the well-known non-label string lists (compiler flags, tags,
+// …) so they don't become junk unresolved refs; everything else — scalars,
+// `select(...)`, variables, mixed-type lists — is skipped because it isn't a
+// plain label list (silent-beats-wrong: the resolver would never match it
+// anyway).
 
-/** Keyword-argument names whose string-list value we walk into references. */
-const LABEL_LIST_ARGS = new Set(['srcs', 'hdrs', 'deps', 'data', 'exports', 'visibility']);
-// `visibility` values (`//visibility:public`) are package-spec labels, not
-// deps — walked so a `//pkg:__subpackages__` style value doesn't silently
-// vanish, but the resolver treats visibility specs as inert (see below).
+/** Well-known string-list attrs that are never labels/files — kept out of references. */
+const NON_LABEL_LIST_ARGS = new Set([
+  'copts', 'linkopts', 'defines', 'local_defines', 'includes',
+  'tags', 'features', 'args', 'toolchains', 'restricted_to', 'target_compatible_with',
+]);
 
 /** Read a `string` node's literal text (its `string_content` child), or null for empty/unsupported. */
 function stringValue(node: SyntaxNode, source: string): string | null {
@@ -92,6 +104,15 @@ function collectLabelStrings(value: SyntaxNode, source: string): { pattern: stri
 /** Is this call's value a `glob([...])` invocation (vs. a plain list / variable)? */
 function isGlobCall(value: SyntaxNode, source: string): boolean {
   return value.type === 'call' && calleeName(value, source) === 'glob';
+}
+
+/** A `list` node whose every named child is a `string` literal (a label/file list, not a variable/select/mixed list). */
+function isStringList(value: SyntaxNode): boolean {
+  return (
+    value.type === 'list' &&
+    value.namedChildren.length > 0 &&
+    value.namedChildren.every((c) => c?.type === 'string')
+  );
 }
 
 export const starlarkExtractor: LanguageExtractor = {
@@ -182,10 +203,11 @@ export const starlarkExtractor: LanguageExtractor = {
         try {
           for (const kwarg of kwargs) {
             const argName = kwargName(kwarg, ctx.source);
-            if (!argName || !LABEL_LIST_ARGS.has(argName) || argName === 'name') continue;
+            if (!argName || argName === 'name' || NON_LABEL_LIST_ARGS.has(argName)) continue;
             const value = kwarg.childForFieldName('value');
             if (!value) continue;
             const isGlob = isGlobCall(value, ctx.source);
+            if (!isGlob && !isStringList(value)) continue;
             for (const { pattern, node: strNode } of collectLabelStrings(value, ctx.source)) {
               ctx.addUnresolvedReference({
                 fromNodeId: created.id,
