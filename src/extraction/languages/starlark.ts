@@ -46,6 +46,73 @@ const NON_LABEL_LIST_ARGS = new Set([
   'tags', 'features', 'args', 'toolchains', 'restricted_to', 'target_compatible_with',
 ]);
 
+// --- Bzlmod / repository-rule extraction (see plan doc for rationale) ------
+//
+// MODULE.bazel is the modern Bazel dependency mechanism (replacing WORKSPACE),
+// so its two gaps matter most on exactly the repos users index today:
+//
+//  1. `module(name=X)` / `bazel_dep(name=X)` carry a `name=` kwarg like any
+//     build-target call, so without special-casing they'd mint fake `class`
+//     (build-target) nodes for every external dependency ("protobuf",
+//     "rules_go", ...) — polluting search/impact results with targets that
+//     don't exist in this repo. They become `module` nodes instead, gated on
+//     the MODULE.bazel filename so a same-named user macro in a .bzl file is
+//     unaffected. Standalone nodes, no edges: external modules aren't
+//     indexed, so an edge would just point at nothing.
+//
+//  2. `x = repository_rule(...)` / `rule(...)` / `provider(...)` / `aspect(...)`
+//     / `module_extension(...)` / `tag_class(...)` are assignment-wrapped
+//     definitions — the call itself has no `name=`, so without special-casing
+//     the LHS name is discarded and only a stray `calls` ref to e.g.
+//     "repository_rule" survives. These become `function` nodes named by the
+//     LHS identifier, so `load("//:defs.bzl", "x")` can resolve to them via
+//     the generic name matcher.
+//
+// Two deliberate frontiers, left silent (no false positives):
+//  3. Positional-name calls (`external_http_archive("grpc", ...)`) can't be
+//     distinguished from any other helper call taking a string first arg
+//     without risking false targets.
+//  4. Non-`native` dotted-method calls (`go_deps.from_file(...)`) are dropped
+//     silently; only `native.<rule>(name=...)` is recovered below, since that
+//     is a real, unambiguous build target (`native.cc_library` etc).
+
+const BZLMOD_MODULE_CALLS = new Set(['module', 'bazel_dep']);
+
+function isModuleBazelFile(filePath: string): boolean {
+  return filePath.slice(filePath.lastIndexOf('/') + 1) === 'MODULE.bazel';
+}
+
+/** Definition-constructor builtins whose assignment target is the real definition name. */
+const DEFINITION_BUILTINS = new Set([
+  'rule', 'repository_rule', 'provider', 'aspect', 'module_extension', 'tag_class',
+]);
+
+/** If `call` is the RHS of `name = call(...)`, return `name`; else null. */
+function assignmentTargetName(call: SyntaxNode, source: string): string | null {
+  const parent = call.parent;
+  if (!parent || parent.type !== 'assignment') return null;
+  // web-tree-sitter node wrappers aren't reference-stable across accessors
+  // (a node reached via .parent vs. via the original walk are `!==` even for
+  // the same underlying node) — compare by position instead of `===`.
+  const right = parent.childForFieldName('right');
+  if (!right || right.startIndex !== call.startIndex || right.endIndex !== call.endIndex) return null;
+  const left = parent.childForFieldName('left');
+  if (!left || left.type !== 'identifier') return null;
+  return getNodeText(left, source);
+}
+
+/** `native.cc_library(...)` -> {name: 'cc_library', isNative: true}; `go_deps.from_file(...)` -> {name: 'go_deps.from_file', isNative: false}. */
+function attributeCallee(call: SyntaxNode, source: string): { name: string; isNative: boolean } | null {
+  const fn = call.childForFieldName('function');
+  if (!fn || fn.type !== 'attribute') return null;
+  const objNode = fn.childForFieldName('object');
+  const attrNode = fn.childForFieldName('attribute');
+  if (!objNode || !attrNode) return null;
+  const obj = getNodeText(objNode, source);
+  const attr = getNodeText(attrNode, source);
+  return { name: obj === 'native' ? attr : `${obj}.${attr}`, isNative: obj === 'native' };
+}
+
 /** Read a `string` node's literal text (its `string_content` child), or null for empty/unsupported. */
 function stringValue(node: SyntaxNode, source: string): string | null {
   const content = node.namedChildren.find((c) => c?.type === 'string_content');
@@ -163,8 +230,30 @@ export const starlarkExtractor: LanguageExtractor = {
 
     if (node.type !== 'call') return false;
 
-    const callee = calleeName(node, ctx.source);
-    if (!callee) return false;
+    let callee = calleeName(node, ctx.source);
+    if (!callee) {
+      // Not a bare identifier callee — try native.<rule>(...) recovery
+      // (item 4). Any other dotted callee (go_deps.from_file, ctx.actions.run,
+      // ...) is a deliberate silent frontier: dropped, no calls ref.
+      const attrCallee = attributeCallee(node, ctx.source);
+      if (!attrCallee || !attrCallee.isNative) return false;
+      callee = attrCallee.name;
+    }
+
+    // x = rule(...) / repository_rule(...) / provider(...) / aspect(...) /
+    // module_extension(...) / tag_class(...) — the assignment LHS is the real
+    // definition name; recover it as a `function` node instead of losing it
+    // to a stray `calls` ref. Bare (non-assigned) calls to these builtins fall
+    // through to the generic calls-ref branch below, unchanged.
+    if (DEFINITION_BUILTINS.has(callee)) {
+      const defName = assignmentTargetName(node, ctx.source);
+      if (defName) {
+        ctx.createNode('function', defName, node, {
+          signature: `${defName} = ${callee}(...)`,
+        });
+        return true;
+      }
+    }
 
     // load("//pkg:defs.bzl", "sym1", "sym2", ...) — an import of the .bzl file.
     if (callee === 'load') {
@@ -183,6 +272,25 @@ export const starlarkExtractor: LanguageExtractor = {
         });
       }
       return true; // don't also treat load() as a build-target call
+    }
+
+    // MODULE.bazel: module(name=X) / bazel_dep(name=X) declare a Bzlmod
+    // dependency, not a build target — become `module` nodes (item 1),
+    // never the `class` target nodes below (that would mint a fake build
+    // target for every external dependency, e.g. "protobuf", "rules_go").
+    // Filename-gated so a same-named macro in an ordinary .bzl file is
+    // unaffected. Always consumed (`return true`), even if `name=` is
+    // missing/non-literal, so it never falls through to the target branch.
+    if (isModuleBazelFile(ctx.filePath) && BZLMOD_MODULE_CALLS.has(callee)) {
+      const kwargs = keywordArgs(node);
+      const nameKwarg = kwargs.find((k) => kwargName(k, ctx.source) === 'name');
+      const modName = nameKwarg ? kwargStringValue(nameKwarg, ctx.source) : null;
+      if (modName) {
+        ctx.createNode('module', modName, node, {
+          signature: `${callee}(name = "${modName}")`,
+        });
+      }
+      return true;
     }
 
     // A build-target call: any call with a `name=` kwarg (cc_library, py_binary,
