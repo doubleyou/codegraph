@@ -255,7 +255,7 @@ function readGitignorePatterns(giPath: string): string {
   // Fast path: one `.ignores()` call forces the library to compile EVERY rule,
   // so if it doesn't throw, the whole file is safe to use verbatim.
   try {
-    ignore().add(content).ignores('.codegraph-probe');
+    ignore({ ignorecase: false }).add(content).ignores('.codegraph-probe');
     return content;
   } catch {
     // Fall through: a line is uncompilable — keep the good ones, drop the bad.
@@ -264,7 +264,7 @@ function readGitignorePatterns(giPath: string): string {
   let dropped = 0;
   for (const line of content.split(/\r?\n/)) {
     try {
-      ignore().add(line).ignores('.codegraph-probe');
+      ignore({ ignorecase: false }).add(line).ignores('.codegraph-probe');
       kept.push(line);
     } catch {
       dropped++;
@@ -287,7 +287,7 @@ function readGitignorePatterns(giPath: string): string {
  * it project code; the explicit `.gitignore` negation is the only opt-in).
  */
 export function buildDefaultIgnore(rootDir: string): Ignore {
-  const ig = ignore().add(DEFAULT_IGNORE_PATTERNS);
+  const ig = ignore({ ignorecase: false }).add(DEFAULT_IGNORE_PATTERNS);
   const rootGitignore = path.join(rootDir, '.gitignore');
   if (fs.existsSync(rootGitignore)) ig.add(readGitignorePatterns(rootGitignore));
   return ig;
@@ -299,7 +299,7 @@ export function buildDefaultIgnore(rootDir: string): Ignore {
  * whose gitignore semantics their own `git ls-files` already enforced (#514).
  */
 function defaultsOnlyIgnore(): Ignore {
-  return ignore().add(DEFAULT_IGNORE_PATTERNS);
+  return ignore({ ignorecase: false }).add(DEFAULT_IGNORE_PATTERNS);
 }
 
 /**
@@ -313,7 +313,7 @@ function defaultsOnlyIgnore(): Ignore {
  */
 function loadIncludeIgnoredMatcher(rootDir: string): Ignore | null {
   const patterns = loadIncludeIgnoredPatterns(rootDir);
-  return patterns.length > 0 ? ignore().add(patterns) : null;
+  return patterns.length > 0 ? ignore({ ignorecase: false }).add(patterns) : null;
 }
 
 /**
@@ -327,7 +327,7 @@ function loadIncludeIgnoredMatcher(rootDir: string): Ignore | null {
  */
 function loadExcludeMatcher(rootDir: string): Ignore | null {
   const patterns = loadExcludePatterns(rootDir);
-  return patterns.length > 0 ? ignore().add(patterns) : null;
+  return patterns.length > 0 ? ignore({ ignorecase: false }).add(patterns) : null;
 }
 
 /**
@@ -342,7 +342,7 @@ function loadExcludeMatcher(rootDir: string): Ignore | null {
  */
 function loadIncludeMatcher(rootDir: string): Ignore | null {
   const patterns = loadIncludePatterns(rootDir);
-  return patterns.length > 0 ? ignore().add(patterns) : null;
+  return patterns.length > 0 ? ignore({ ignorecase: false }).add(patterns) : null;
 }
 
 /** Glob metacharacters that end the static (literal) prefix of an `include` pattern. */
@@ -1247,7 +1247,7 @@ function scanDirectoryWalk(
     // uncompilable .gitignore is skipped/filtered with a warning, never thrown
     // (issue #682) — so the per-file `.ignores()` calls below can't crash.
     const patterns = readGitignorePatterns(giPath);
-    return patterns ? { dir, ig: ignore().add(patterns) } : null;
+    return patterns ? { dir, ig: ignore({ ignorecase: false }).add(patterns) } : null;
   };
 
   const isIgnored = (fullPath: string, isDir: boolean, matchers: ScopedIgnore[]): boolean => {

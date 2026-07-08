@@ -7088,6 +7088,21 @@ describe('Nested non-submodule git repos', () => {
     expect(ig.ignores('dist/')).toBe(true); // valid rule survives
     expect(ig.ignores('src/app.ts')).toBe(false);
   });
+
+  // `ignore`'s default is case-insensitive matching, which made a `/build`
+  // .gitignore rule (an extremely common convention) also swallow the
+  // differently-cased file `BUILD` — Bazel's canonical build-file name. Real
+  // `git check-ignore` is case-sensitive on a case-sensitive filesystem (the
+  // Linux/most-CI default), so CodeGraph's matcher must agree with it instead
+  // of silently dropping every repo-root BUILD file in a Bazel project that
+  // also ignores a `build/` output dir.
+  it('gitignore matching is case-sensitive: /build does not swallow a root BUILD file', () => {
+    fs.writeFileSync(path.join(tempDir, '.gitignore'), '/build\n');
+    fs.writeFileSync(path.join(tempDir, 'BUILD'), 'filegroup(name = "x")\n');
+    const ig = buildDefaultIgnore(tempDir);
+    expect(ig.ignores('BUILD')).toBe(false);
+    expect(ig.ignores('build')).toBe(true);
+  });
 });
 
 // =============================================================================
